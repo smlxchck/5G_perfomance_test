@@ -1,7 +1,18 @@
 import py3gpp
 import numpy as np
+import math
 
-def calculate_resources_for_packet(packet_size_bytes):
+def calculate_resources_for_packet(packet_size_bytes, mcs_index):
+    # Таблица MCS 256QAM (Модуляция, R x 1024, Qm)
+    mcs_table = {
+        0:  ('qpsk',   120, 2), 
+        8:  ('qam16',  553, 4), 
+        16: ('qam64',  719, 6), 
+        27: ('qam256', 948, 8)  
+    }
+    modulation, R_target, Qm = mcs_table[mcs_index]
+    R = R_target / 1024.0 # скорость кодирования
+
     ## настройка общей сетки базовой станции (carrier)
     carrier = py3gpp.nrCarrierConfig()
     carrier.NSizeGrid = 273        # 273 ресурсных блока (для полосы 100 МГц)
@@ -14,14 +25,12 @@ def calculate_resources_for_packet(packet_size_bytes):
     # Чем больше пакет, тем больше ресурсных блоков (PRB) мы ему даем.
     # если 1 PRB может перенести 10 байт данных.
     # функция max(1, ...) гарантирует что даже для 1 байта мы выделим минимум 1 PRB.
-    import math
-    allocated_prb = max(1, math.ceil(packet_size_bytes / 10)) 
 
-    # определение кодека (LDPC BG1 BG2)
-    codec_type = "LDPC Base Graph 2 (для мелких пакетов)"
-    # Сделаем порог переключения кодека меньше, чтобы на пакете 100 байт он переключился
-    if packet_size_bytes >= 100: 
-        codec_type = "LDPC Base Graph 1 (для крупных пакетов)"
+    bits_per_re = Qm * R
+    re_per_prb = 144 # 12 поднесущих * 12 символов 
+    bits_per_prb = re_per_prb * bits_per_re
+    
+    allocated_prb = max(1, math.ceil((packet_size_bytes * 8) / bits_per_prb))
     
     # исправление бага библиотеки 
     pdsch.NStartBWP = 0                       
@@ -30,7 +39,7 @@ def calculate_resources_for_packet(packet_size_bytes):
     
     # выделяем символы в слоте
     pdsch.SymbolAllocation = [2, 12] 
-    pdsch.Modulation = 'qpsk'
+    pdsch.Modulation = modulation
     
     ## вычисляем Resource Elements
     result_indices = py3gpp.nrPDSCHIndices(carrier, pdsch)
@@ -47,7 +56,6 @@ def calculate_resources_for_packet(packet_size_bytes):
     # по стандарту 3GPP если Transport Block Size - размер данных - маленький то BG2.
     # если большой то BG1.
     A = packet_size_bytes * 8  # Считаем размер в битах
-    R = 0.5                    # Скорость кодирования (Code Rate) - можно менять от 0.1 до 0.9 (имитация связи)
 
     if A <= 292:
         codec_type = "LDPC Base Graph 2"
@@ -75,5 +83,5 @@ def calculate_resources_for_packet(packet_size_bytes):
 packets_queue =[1000, 100, 50, 2, 1]
 
 for pkt in packets_queue:
-    result = calculate_resources_for_packet(pkt)
+    result = calculate_resources_for_packet(pkt, 0) # последнее число - это индекс MCS
     print(result)
