@@ -65,7 +65,7 @@ def calculate_resources_for_packet(packet_size_bytes, mcs_index, start_prb=0):
     re_per_prb = 144 # 12 поднесущих * 12 символов 
     bits_per_prb = re_per_prb * bits_per_re
     
-    allocated_prb = max(1, math.ceil((packet_size_bytes * 8) / bits_per_prb))
+    allocated_prb = max(1, math.ceil((packet_size_bytes * 8 + 24) / bits_per_prb))
     
     # исправление бага библиотеки 
     pdsch.NStartBWP = 0                       
@@ -141,8 +141,13 @@ def generate_simulation_scenario(num_ttis):
     active_users = {i: random.uniform(10.0, 25.0) for i in range(1, start_users_count + 1)}
     
     for tti in range(num_ttis):
-        current_tti = TtiSlot(tti_index=tti)
-        current_prb = 0
+        # слоты для downlink и uplink
+        current_tti_dl = TtiSlot(tti_index=tti)
+        current_tti_ul = TtiSlot(tti_index=tti) 
+        
+        # В режиме FDD (разные частоты) у DL и UL свои независимые 273 PRB
+        current_prb_dl = 0 
+        current_prb_ul = 0 
         
         # Групповое изменение состава пользователей
         if random.random() < change_probability:
@@ -171,38 +176,53 @@ def generate_simulation_scenario(num_ttis):
             # маппинг SNR -> MCS
             mcs = 0 if snr < 10 else 8 if snr < 15 else 16 if snr < 20 else 27
             
-            # размер пакета т.е. трафик
-            payload = random.choice([50, 100, 300, 600, 1000])
+            # downlink
+            payload_dl = random.choice([50, 100, 300, 600, 1000])
+            res_dl = calculate_resources_for_packet(payload_dl, mcs, start_prb=current_prb_dl)
+            alloc_prbs_dl = min(res_dl["Allocated PRBs"], max_prb_per_ue)
             
-            # вызываем расчет RE и AXI через py3gpp
-            res = calculate_resources_for_packet(payload, mcs, start_prb=current_prb)
+            if current_prb_dl + alloc_prbs_dl <= 273: 
+                current_prb_dl += alloc_prbs_dl
+                current_tti_dl.users.append(
+                    UeAllocation(ue_id, round(snr, 1), mcs, f"{alloc_prbs_dl}x12x1", res_dl["Phy Sizes"])
+                )
+
+            # uplink
+            # Трафик UL обычно меньше 
+            payload_ul = random.choice([10, 20, 50, 100, 300])
+            res_ul = calculate_resources_for_packet(payload_ul, mcs, start_prb=current_prb_ul)
+            alloc_prbs_ul = min(res_ul["Allocated PRBs"], max_prb_per_ue)
             
-            # планировщик - ограничиваем PRB, чтобы не забить всю соту одним пользователем
-            allocated_prbs = min(res["Allocated PRBs"], max_prb_per_ue)
+            if current_prb_ul + alloc_prbs_ul <= 273: 
+                current_prb_ul += alloc_prbs_ul
+                current_tti_ul.users.append(
+                    UeAllocation(ue_id, round(snr, 1), mcs, f"{alloc_prbs_ul}x12x1", res_ul["Phy Sizes"])
+                )
+            # -----------------------------------------------------------
             
-            # проверка ресурсов соты (273 PRB)
-            if current_prb + allocated_prbs > 273: 
-                break 
-                
-            current_prb += allocated_prbs
-            
-            # запись в TTI
-            current_tti.users.append(
-                UeAllocation(ue_id, round(snr, 1), mcs, f"{allocated_prbs}x12x1", res["Phy Sizes"])
-            )
-            
-        array_of_ttis_dl.append(current_tti)
-        array_of_ttis_ul.append(TtiSlot(tti_index=tti))
+        # сохраняем заполненные TTI в соответствующие массивы
+        array_of_ttis_dl.append(current_tti_dl)
+        array_of_ttis_ul.append(current_tti_ul)
         
     return config, array_of_ttis_dl, array_of_ttis_ul
 
 # симуляция
 config, dl_scenario, ul_scenario = generate_simulation_scenario(num_ttis=100) # каждый tti = 0.5 мс
 
-print(f"=== Конфигурация: {config.duplex} | BW: {config.bw_mhz}MHz | SCS: {config.scs_khz}kHz | TTI: {config.tti_duration_ms}ms ===")
-for tti in dl_scenario:
-    print(f"\n[ Downlink TTI № {tti.tti_index} ] Пользователей: {len(tti.users)}")
-    for ue in tti.users:
+print(f"Конфигурация: {config.duplex} | BW: {config.bw_mhz}MHz | SCS: {config.scs_khz}kHz | TTI: {config.tti_duration_ms}ms")
+
+for tti_dl, tti_ul in zip(dl_scenario, ul_scenario):
+    print(f"\n--------------- TTI № {tti_dl.tti_index} ---------------")
+    
+    print(f" Downlink (PDSCH) | Пользователей: {len(tti_dl.users)}")
+    for ue in tti_dl.users:
+        # Основная строка: ID, Сигнал, MCS и выделенные PRB
         print(f"  UE {ue.ue_id} | SNR: {ue.snr}dB -> MCS: {ue.mcs} | Ресурсы: {ue.format_prb}")
-        print(f"      PHY: Payload {ue.phy_sizes.tb_bits}b -> CRC {ue.phy_sizes.tb_crc_bits}b -> {ue.phy_sizes.base_graph}")
-        print(f"      AXI Load: {ue.phy_sizes.axi_bus_bytes} байт")
+        # Компактная строка про железо: только Кодек и Нагрузка на шину
+        print(f"Codec: {ue.phy_sizes.base_graph} | AXI Load: {ue.phy_sizes.axi_bus_bytes} B")
+        
+    print(f"\n Uplink (PUSCH)   | Пользователей: {len(tti_ul.users)}")
+    for ue in tti_ul.users:
+        print(f"  UE {ue.ue_id} | SNR: {ue.snr}dB -> MCS: {ue.mcs} | Ресурсы: {ue.format_prb}")
+        # Аналогично для Uplink
+        print(f"Codec: {ue.phy_sizes.base_graph} | AXI Load: {ue.phy_sizes.axi_bus_bytes} B")
