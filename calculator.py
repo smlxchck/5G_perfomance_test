@@ -2,6 +2,7 @@ import py3gpp
 import numpy as np
 import math
 import random
+import pandas as pd
 from dataclasses import dataclass, field
 from typing import List
 
@@ -131,7 +132,7 @@ def generate_simulation_scenario(num_ttis):
     
     # сценарий
     start_users_count = 6      # кол-во пользователей в начале
-    change_probability = 0.01  # шанс изменения (0.01 = 1%)
+    change_probability = 0.0001  # шанс изменения (0.01 = 1%)
     max_cell_users = 15        # максимум пользователей в соте
     min_cell_users = 1         # минимум пользователей
     max_prb_per_ue = 40        # лимит ресурсов на одного (чтобы всем хватило места) так как 273 ресурсных блока
@@ -198,7 +199,6 @@ def generate_simulation_scenario(num_ttis):
                 current_tti_ul.users.append(
                     UeAllocation(ue_id, round(snr, 1), mcs, f"{alloc_prbs_ul}x12x1", res_ul["Phy Sizes"])
                 )
-            # -----------------------------------------------------------
             
         # сохраняем заполненные TTI в соответствующие массивы
         array_of_ttis_dl.append(current_tti_dl)
@@ -206,23 +206,128 @@ def generate_simulation_scenario(num_ttis):
         
     return config, array_of_ttis_dl, array_of_ttis_ul
 
-# симуляция
-config, dl_scenario, ul_scenario = generate_simulation_scenario(num_ttis=100) # каждый tti = 0.5 мс
+# === ЗАПУСК СИМУЛЯЦИИ ===
+num_sim_ttis = 6000
+config, dl_scenario, ul_scenario = generate_simulation_scenario(num_ttis=num_sim_ttis) 
 
-print(f"Конфигурация: {config.duplex} | BW: {config.bw_mhz}MHz | SCS: {config.scs_khz}kHz | TTI: {config.tti_duration_ms}ms")
+# === СБОРКА ДАННЫХ В PANDAS DATAFRAME ===
+records = []
 
 for tti_dl, tti_ul in zip(dl_scenario, ul_scenario):
-    print(f"\n--------------- TTI № {tti_dl.tti_index} ---------------")
-    
-    print(f" Downlink (PDSCH) | Пользователей: {len(tti_dl.users)}")
+    # Собираем данные Downlink
     for ue in tti_dl.users:
-        # Основная строка: ID, Сигнал, MCS и выделенные PRB
-        print(f"  UE {ue.ue_id} | SNR: {ue.snr}dB -> MCS: {ue.mcs} | Ресурсы: {ue.format_prb}")
-        # Компактная строка про железо: только Кодек и Нагрузка на шину
-        print(f"Codec: {ue.phy_sizes.base_graph} | AXI Load: {ue.phy_sizes.axi_bus_bytes} B")
+        records.append({
+            "TTI": tti_dl.tti_index,
+            "Direction": "DL",
+            "UE_ID": ue.ue_id,
+            "SNR_dB": ue.snr,
+            "MCS": ue.mcs,
+            "Resources": ue.format_prb,                 
+            "PRBs": int(ue.format_prb.split('x')[0]),   # Оставил цифру для удобства аналитики
+            "Payload_Bits": ue.phy_sizes.tb_bits,
+            "Codec": ue.phy_sizes.base_graph,
+            "AXI_Load_Bytes": ue.phy_sizes.axi_bus_bytes
+        })
         
-    print(f"\n Uplink (PUSCH)   | Пользователей: {len(tti_ul.users)}")
+    # Собираем данные Uplink
     for ue in tti_ul.users:
-        print(f"  UE {ue.ue_id} | SNR: {ue.snr}dB -> MCS: {ue.mcs} | Ресурсы: {ue.format_prb}")
-        # Аналогично для Uplink
-        print(f"Codec: {ue.phy_sizes.base_graph} | AXI Load: {ue.phy_sizes.axi_bus_bytes} B")
+        records.append({
+            "TTI": tti_ul.tti_index,
+            "Direction": "UL",
+            "UE_ID": ue.ue_id,
+            "SNR_dB": ue.snr,
+            "MCS": ue.mcs,
+            "Resources": ue.format_prb,               
+            "PRBs": int(ue.format_prb.split('x')[0]),
+            "Payload_Bits": ue.phy_sizes.tb_bits,
+            "Codec": ue.phy_sizes.base_graph,
+            "AXI_Load_Bytes": ue.phy_sizes.axi_bus_bytes
+        })
+
+df = pd.DataFrame(records)
+
+# === ВЫВОД И АНАЛИТИКА ===
+print(f"=== Конфигурация: {config.duplex} | BW: {config.bw_mhz}MHz | SCS: {config.scs_khz}kHz | TTI: {config.tti_duration_ms}ms ===")
+print(f"Всего записей в симуляции: {len(df)}")
+
+# 1. кусочек самой таблицы (первые 10 строк)
+print("\n--- Фрагмент базы данных (первые 10 операций) ---")
+print(df.head(10).to_string(index=False))
+
+# Время всей симуляции в секундах (нужно для расчета скоростей)
+total_time_sec = num_sim_ttis * config.tti_duration_ms / 1000.0
+
+# 2. МЕТРИКА (По чекбоксу 1): "За один TTI сколько всего данных суммарно от всех челов мы передали"
+print("\n--- Пропускная способность соты (Cell Capacity) ---")
+# Группируем DL трафик по TTI и считаем сумму бит
+dl_payload_per_tti = df[df['Direction'] == 'DL'].groupby('TTI')['Payload_Bits'].sum()
+
+# Переводим в Килобайты (чтобы было как просил препод)
+avg_kb_per_tti = (dl_payload_per_tti.mean() / 8) / 1024
+max_kb_per_tti = (dl_payload_per_tti.max() / 8) / 1024
+# Считаем реальную скорость соты в Мбит/с
+cell_throughput_mbps = (dl_payload_per_tti.sum() / 1e6) / total_time_sec
+
+print(f"Средний объем переданных данных (DL) за один TTI: {round(avg_kb_per_tti, 2)} КБ")
+print(f"Пиковый объем переданных данных (DL) за один TTI:  {round(max_kb_per_tti, 2)} КБ")
+print(f"Реальная средняя скорость соты (DL Cell Throughput): {round(cell_throughput_mbps, 2)} Мбит/с")
+
+# 3. МЕТРИКИ (По чекбоксам 2 и 3): "Накопленные данные и средняя скорость пользователя"
+print(f"\n--- Статистика по Абонентам за время симуляции ({total_time_sec} сек) ---")
+
+# Считаем суммарный трафик в Битах
+user_traffic_bits = df.groupby(['UE_ID', 'Direction'])['Payload_Bits'].sum().unstack().fillna(0)
+
+# Переводим в Килобайты (Накопленные данные)
+user_traffic_kb = user_traffic_bits / 8 / 1024
+# Переводим в Скорость Мбит/с
+user_throughput_mbps = (user_traffic_bits / 1e6) / total_time_sec
+
+# Собираем красивую итоговую таблицу
+user_stats = pd.DataFrame({
+    'Скачал всего (DL, КБ)': user_traffic_kb['DL'].round(2),
+    'Отправил всего (UL, КБ)': user_traffic_kb['UL'].round(2),
+    'Скорость DL (Мбит/с)': user_throughput_mbps['DL'].round(2),
+    'Скорость UL (Мбит/с)': user_throughput_mbps['UL'].round(2)
+})
+print(user_stats.to_string())
+
+# 4. МЕТРИКА: "Какая максимальная нагрузка на кодеки и средняя"
+print("\n--- Нагрузка на шину AXI (Hardware Performance) ---")
+axi_per_tti = df.groupby('TTI')['AXI_Load_Bytes'].sum()
+print(f"Средняя нагрузка: {round(axi_per_tti.mean(), 2)} байт / TTI")
+print(f"Пиковая (Максимальная) нагрузка: {axi_per_tti.max()} байт / TTI")
+
+print("\n--- Использование кодеков LDPC ---")
+print(df['Codec'].value_counts().to_string())
+
+# 4. Сохраняем в файл
+df.to_csv('simulation_results.csv', index=False)
+print("\nДанные сохранены в файл simulation_results.csv")
+
+
+# === ПОСТРОЕНИЕ ГРАФИКА ДИНАМИКИ ПОЛЬЗОВАТЕЛЕЙ ===
+import matplotlib.pyplot as plt
+
+# Группируем данные: считаем количество уникальных UE_ID для каждого TTI
+# (Берем только DL, так как количество абонентов в DL и UL у нас одинаковое)
+users_per_tti = df[df['Direction'] == 'DL'].groupby('TTI')['UE_ID'].nunique()
+
+# Настройка внешнего вида графика
+plt.figure(figsize=(12, 6))
+# drawstyle='steps-post' делает график "ступеньками", что отражает дискретную природу подключений
+plt.plot(users_per_tti.index, users_per_tti.values, drawstyle='steps-post', color='#1f77b4', linewidth=2.5)
+
+# Оформление
+plt.title(f'Динамика активных абонентов в соте (Симуляция {num_sim_ttis * config.tti_duration_ms / 1000} сек)', fontsize=14, pad=15)
+plt.xlabel('Время (TTI, 2000 TTI = 1 с)', fontsize=12)
+plt.ylabel('Количество активных пользователей', fontsize=12)
+
+# Сетки и лимиты
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.ylim(0, 16) # От 0 до max_cell_users + 1
+plt.xlim(0, num_sim_ttis)
+
+# Показывать график на экране
+plt.tight_layout()
+plt.show()
