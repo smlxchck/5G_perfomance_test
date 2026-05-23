@@ -6,10 +6,11 @@
 ## Requirements 
 
 Для работы [калькулятора](calculator.py) необходим Python 3.9+ и следующие библиотеки:
-[py3gpp](https://github.com/catkira/py3gpp) - ядро для расчета частотно-временной сетки и параметров 5G NR.
-[pandas](https://github.com/pandas-dev/pandas) - сбор, структурирование и аналитическая обработка результатов симуляции.
-[numpy](https://github.com/numpy/numpy) - математические операции с массивами данных.
-[matplotlib](https://github.com/matplotlib/matplotlib) - визуализация динамики абонентов в соте.
+
+- [py3gpp](https://github.com/catkira/py3gpp) - ядро для расчета частотно-временной сетки и параметров 5G NR.
+- [pandas](https://github.com/pandas-dev/pandas) - сбор, структурирование и аналитическая обработка результатов симуляции.
+- [numpy](https://github.com/numpy/numpy) - математические операции с массивами данных.
+- [matplotlib](https://github.com/matplotlib/matplotlib) - визуализация динамики абонентов в соте.
 
 ## Publications
 
