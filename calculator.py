@@ -258,7 +258,7 @@ def generate_simulation_scenario(num_ttis, config=None):
     
     # сценарий
     start_users_count = 6      # кол-во пользователей в начале
-    change_probability = 0.0001  # шанс изменения (0.01 = 1%)
+    change_probability = 0.01  # шанс изменения (0.01 = 1%)
     max_cell_users = 15        # максимум пользователей в соте
     min_cell_users = 1         # минимум пользователей
     max_prb_per_ue = 40        # лимит ресурсов на одного (чтобы всем хватило места) так как 273 ресурсных блока
@@ -269,6 +269,7 @@ def generate_simulation_scenario(num_ttis, config=None):
 
     for tti in range(num_ttis):
         # слоты для downlink и uplink
+        current_tti_dl = TtiSlot(tti_index=tti)
         current_tti_ul = TtiSlot(tti_index=tti)
 
         # В TDD на каждый TTI активно только одно направление (пример: DDDSU)
@@ -326,7 +327,7 @@ def generate_simulation_scenario(num_ttis, config=None):
                     current_prb_dl += alloc_prbs_dl
                     current_tti_dl.users.append(
                         UeAllocation(ue_id, round(snr, 1), mcs, f"{alloc_prbs_dl}x12x1",
-                                     res_dl["Phy Sizes"], pdcch_axi_bytes=res_pdcch["AXI Bus Load"])
+                                    res_dl["Phy Sizes"], pdcch_axi_bytes=res_pdcch["AXI Bus Load"])
                     )
 
             # uplink
@@ -484,15 +485,22 @@ print("\nДанные сохранены в файл simulation_results.csv")
 import matplotlib.pyplot as plt
 
 def plot_resource_grid_heatmap(tti_slot, n_size_grid=273):
-    grid = np.zeros(n_size_grid)
+    grid = np.full(n_size_grid, np.nan)  # nan вместо 0 = свободно
+    cursor = 0
     for ue in tti_slot.users:
         prbs = int(ue.format_prb.split('x')[0])
-        start = next((s for s in range(n_size_grid) if grid[s:s+prbs].sum() == 0), 0)
-        grid[start:start+prbs] = ue.ue_id
+        end = min(cursor + prbs, n_size_grid)
+        grid[cursor:end] = ue.ue_id
+        cursor = end
+        if cursor >= n_size_grid:
+            break
+
+    cmap = plt.cm.tab20
+    cmap.set_bad(color='lightgrey')  # nan = серый = свободно
 
     plt.figure(figsize=(14, 2))
-    plt.imshow(grid.reshape(1, -1), aspect='auto', cmap='tab20')
-    plt.title('Resource Grid: распределение PRB между UE (один TTI)')
+    plt.imshow(grid.reshape(1, -1), aspect='auto', cmap=cmap)
+    plt.title(f'Resource Grid DL: распределение PRB между UE (TTI={tti_slot.tti_index})')
     plt.xlabel('PRB index')
     plt.yticks([])
     plt.colorbar(label='UE_ID')
