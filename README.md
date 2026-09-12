@@ -11,6 +11,7 @@
 - [pandas](https://github.com/pandas-dev/pandas) - сбор, структурирование и аналитическая обработка результатов симуляции.
 - [numpy](https://github.com/numpy/numpy) - математические операции с массивами данных.
 - [matplotlib](https://github.com/matplotlib/matplotlib) - визуализация динамики абонентов в соте.
+- [streamlit](https://github.com/streamlit/streamlit) - интерактивный веб-интерфейс для калькулятора
 
 ## Publications
 
