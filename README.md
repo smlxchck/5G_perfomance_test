@@ -2,6 +2,7 @@
 
 
 [Отчет о ходе работ](OHR.ipynb)
+[Ссылка на калькулятор онлайн](https://5g-perfomance-test.streamlit.app/) (работает на [облаке streamlit](https://share.streamlit.io/))
 
 ## Requirements 
 
