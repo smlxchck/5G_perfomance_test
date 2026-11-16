@@ -8,10 +8,55 @@ from calculator import (
     plot_soc_load_diagram,   # SoC-схема: нагрузка блоков через Shared RAM / AXI4
     plot_axi_waterfall,      # накопление нагрузки на шину по конвейеру
     DEFAULT_BLOCK_SPEEDS_GBPS,
+    AXI_PDSCH_ORDER, AXI_PDCCH_ORDER,   # порядок блоков конвейера (для таблицы карточек)
 )
 
 st.set_page_config(page_title="5G NR Hardware Load Calculator", layout="wide")
 st.title("Калькулятор аппаратной нагрузки 5G NR PHY")
+
+# Хелперы для карточек вкладки «консоль/метрики»
+
+def _fmt_int(x):
+    """Целое с разделителями-пробелами: 26054 -> '26 054'."""
+    return f"{x:,.0f}".replace(",", " ")
+
+def _block_table_df(metrics, config):
+    """Таблица быстродействия блоков конвейера (DataFrame для st.dataframe)."""
+    stage_stats = metrics["stage_stats"]
+    speeds = metrics["block_speeds_gbps"]
+    num_ttis = metrics["num_ttis"]
+    tti_sec = config.tti_duration_ms / 1000.0
+    order = [s for s in AXI_PDSCH_ORDER + AXI_PDCCH_ORDER if s in stage_stats]
+    order += [s for s in stage_stats if s not in order]
+    rows = []
+    for stage in order:
+        s = stage_stats[stage]
+        req = ((s["read"] + s["write"]) / num_ttis / tti_sec) / 1e9
+        peak_req = (s.get("peak", 0) / tti_sec) / 1e9
+        sp = speeds.get(stage, 5.0)
+        rows.append({
+            "Блок": stage,
+            "Чтение КБ/TTI": s["read"] / num_ttis / 1024,
+            "Запись КБ/TTI": s["write"] / num_ttis / 1024,
+            "Треб. ГБ/с": req,
+            "Есть ГБ/с": sp,
+            "Загрузка %": req / sp * 100 if sp > 0 else float("inf"),
+            "Пик %": peak_req / sp * 100 if sp > 0 else float("inf"),
+        })
+    return pd.DataFrame(rows)
+
+def _style_block_table(df):
+    """Подсветка строк таблицы блоков по загрузке (цвета — как на SoC-схеме)."""
+    def _row_color(row):
+        u = row["Загрузка %"] / 100.0
+        color = "#c8e6c9" if u < 0.5 else ("#fff3c4" if u < 0.8 else "#ffcdd2")
+        return [f"background-color: {color}; color: #1a1a1a;"] * len(row)
+    return (df.style
+            .hide(axis="index")
+            .apply(_row_color, axis=1)
+            .format({"Чтение КБ/TTI": "{:.1f}", "Запись КБ/TTI": "{:.1f}",
+                     "Треб. ГБ/с": "{:.3f}", "Есть ГБ/с": "{:.2f}",
+                     "Загрузка %": "{:.1f}", "Пик %": "{:.1f}"}))
 
 # боковая панель
 with st.sidebar:
@@ -89,31 +134,73 @@ if "df" in st.session_state:
     re_max_prb = st.session_state.get("re_max_prb", 50)  
 
     # верхние карточки метрики
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Cell DL Throughput", f"{metrics['cell_throughput_mbps']:.2f} Мбит/с")
-    c2.metric("AXI средняя", f"{metrics['axi_avg_per_tti']:.0f} байт/TTI")
-    c3.metric("AXI пиковая", f"{metrics['axi_max_per_tti']:.0f} байт/TTI")
-    c4.metric("Утилизация AXI (пик)", f"{metrics['bus_util_peak_pct']:.2f} %",
-              help=f"От ёмкости шины {metrics['axi_bus_capacity_gbps']} ГБ/с. "
-                   f"Средняя: {metrics['bus_util_avg_pct']:.2f} %")
-    c5.metric("Записей в БД", f"{metrics['total_records']:,}")
+        # верхние карточки: только главное (детали - в секциях ниже)
+    _tti_sec = config.tti_duration_ms / 1000.0
+    def _peak_load(item):
+        _stage, _s = item
+        _sp = metrics["block_speeds_gbps"].get(_stage, 5.0)
+        return (_s.get("peak", 0) / _tti_sec / 1e9) / _sp if _sp > 0 else 0.0
+    _btl_stage, _btl_stats = max(metrics["stage_stats"].items(), key=_peak_load)
+    _btl_pct = _peak_load((_btl_stage, _btl_stats)) * 100
 
-    # HARQ-метрики
-    h1_, h2_, h3_, h4_ = st.columns(4)
-    h1_.metric("HARQ ретрансмиссий", f"{metrics['harq_retx_total']:,}",
-               help="Сколько раз пакеты пришлось передавать повторно (RV1-RV3)")
-    h2_.metric("BLER первой передачи", f"{metrics['harq_bler_effective'] * 100:.1f} %",
-               help="Доля TB, не декодировавшихся с первой попытки (проектная точка MCS — 10%)")
-    h3_.metric("Ретр. на TB (среднее)", f"{metrics['harq_avg_retx_per_tb']:.2f}",
-               help=f"Среднее число повторов на транспортный блок; после RV{3} TB отбрасывается")
-    h4_.metric("Soft buffer пик (UL)", f"{metrics['harq_buffer_max_bytes']:,} Б",
-               help="Пиковый объём мягких бит в буфере HARQ приёмника gNB (UL) — нагрузка на SRAM чипа")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Cell DL Throughput", f"{metrics['cell_throughput_mbps']:.2f} Мбит/с")
+    c2.metric("AXI утилизация (средняя)", f"{metrics['bus_util_avg_pct']:.1f} %",
+              help=f"От ёмкости шины {metrics['axi_bus_capacity_gbps']} ГБ/с")
+    c3.metric("AXI утилизация (пик)", f"{metrics['bus_util_peak_pct']:.1f} %")
 
     tab_console, tab_soc, tab_charts, tab_table = st.tabs(
         ["Консоль / метрики", "SoC-схема AXI", "Графики", "Полная таблица"])
 
     with tab_console:
-        st.text(st.session_state["report"])
+    
+        # Пропускная способность соты
+        with st.container(border=True):
+            st.caption("Пропускная способность соты (DL)")
+            t1, t2 = st.columns(2)
+            t1.metric("Средний объём / TTI", f"{metrics['avg_kb_per_tti']:.2f} КБ")
+            t2.metric("Пиковый объём / TTI", f"{metrics['max_kb_per_tti']:.2f} КБ")
+
+        # Нагрузка AXI/SoC
+        with st.container(border=True):
+            st.caption("Нагрузка на шину AXI / SoC")
+            a1, a2 = st.columns(2)
+            a1.metric("AXI средняя / TTI", f"{metrics['axi_avg_per_tti']/1024:.1f} КБ")
+            a2.metric("AXI пиковая / TTI", f"{metrics['axi_max_per_tti']/1024:.1f} КБ")
+            a3, a4, a5 = st.columns(3)
+            a3.metric("AXI пиковая / TTI", f"{metrics['axi_max_per_tti']:.0f} Б")
+            a4.metric("Утилизация шины (средняя)", f"{metrics['bus_util_avg_pct']:.2f} %",
+                      help=f"От ёмкости {metrics['axi_bus_capacity_gbps']} ГБ/с")
+            a5.metric("Утилизация шины (пик)", f"{metrics['bus_util_peak_pct']:.2f} %")
+            st.caption("Быстродействие блоков конвейера (среднее за TTI). Цвет строки — загрузка: "
+                       "зелёный < 50 %, жёлтый 50–80 %, красный > 80 %.")
+            st.dataframe(_style_block_table(_block_table_df(metrics, config)),
+                         use_container_width=True)
+            st.info(metrics["buffer_recommendation"])
+
+        # HARQ
+        with st.container(border=True):
+            st.caption("HARQ (гибридный автоматический повтор)")
+            q1, q2, q3 = st.columns(3)
+            q1.metric("Транспортных блоков", _fmt_int(metrics['harq_tb_total']))
+            q2.metric("Ретрансмиссий (RV1–RV3)", _fmt_int(metrics['harq_retx_total']))
+            q3.metric("Отброшено после RV3", _fmt_int(metrics['harq_dropped']))
+            q4, q5, q6 = st.columns(3)
+            q4.metric("BLER первой передачи", f"{metrics['harq_bler_effective'] * 100:.1f} %")
+            q5.metric("Ретрансмиссий на TB", f"{metrics['harq_avg_retx_per_tb']:.2f}")
+            q6.metric("Soft buffer UL (пик)", _fmt_int(metrics['harq_buffer_max_bytes']) + " Б",
+                      help=f"Средний: {_fmt_int(metrics['harq_buffer_avg_bytes'])} Б — нагрузка на SRAM приёмника gNB")
+
+        # Статистика по абонентам
+        with st.container(border=True):
+            st.caption("Статистика по абонентам")
+            st.dataframe(metrics["user_stats"], use_container_width=True)
+
+        # Прежний консольный вывод калькулятора
+        st.download_button(
+            "Скачать текстовый отчёт калькулятора (.txt)",
+            data=st.session_state["report"].encode("utf-8"),
+            file_name="phy_console_report.txt", mime="text/plain")
 
     with tab_soc:
         st.subheader("SoC 5G Downlink: нагрузка блоков через Shared RAM / AXI4")
