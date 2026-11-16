@@ -648,8 +648,7 @@ def recommend_buffer_architecture(stage_stats, num_ttis, tti_duration_ms,
         lines.append(
             f"ВЕРДИКТ: блок '{worst_peak[0]}' не успевает в пиковые TTI - требуется "
             f"{worst_peak[2]:.2f} ГБ/с при быстродействии {worst_peak[3]:.2f} ГБ/с "
-            f"({worst_peak[5]*100:.0f}%). Пики сглаживает локальный SRAM-буфер перед этим "
-            f"блоком (шина при этом загружена лишь на {bus_util*100:.0f}% - в ней проблемы нет)."
+            f"({worst_peak[5]*100:.0f}%). Пики сглаживает локальный SRAM-буфер перед этим блоком."
         )
     elif bus_util > 0.8:
         lines.append("ВЕРДИКТ: узкое место - сама шина AXI (утилизация > 80%). "
@@ -872,22 +871,19 @@ def run_simulation(config, num_ttis, axi_bus_capacity_gbps=7.5, block_speeds_gbp
             d["peak"] = max(d["peak"], r + w)
 
     total_time_sec = num_ttis * config.tti_duration_ms / 1000.0
-    dl_payload_per_tti = df[df['Direction'] == 'DL'].groupby('TTI')['Payload_Bits'].sum()
+    dl_payload_per_tti = df[df['Direction'] == 'DL'].groupby('TTI')['Payload_Bits'].sum().reindex(range(num_ttis), fill_value=0)
     avg_kb_per_tti = (dl_payload_per_tti.mean() / 8) / 1024
     max_kb_per_tti = (dl_payload_per_tti.max() / 8) / 1024
     cell_throughput_mbps = (dl_payload_per_tti.sum() / 1e6) / total_time_sec
 
     user_traffic_bits = df.groupby(['UE_ID', 'Direction'])['Payload_Bits'].sum().unstack().fillna(0)
     user_traffic_kb = user_traffic_bits / 8 / 1024
-    user_throughput_mbps = (user_traffic_bits / 1e6) / total_time_sec
     user_stats = pd.DataFrame({
         'Скачал всего (DL, КБ)': user_traffic_kb.get('DL', 0).round(2),
         'Отправил всего (UL, КБ)': user_traffic_kb.get('UL', 0).round(2),
-        'Скорость DL (Мбит/с)': user_throughput_mbps.get('DL', 0).round(2),
-        'Скорость UL (Мбит/с)': user_throughput_mbps.get('UL', 0).round(2),
     })
 
-    axi_per_tti = df.groupby('TTI')['Total_AXI_Bytes'].sum()
+    axi_per_tti = df.groupby('TTI')['Total_AXI_Bytes'].sum().reindex(range(num_ttis), fill_value=0)
 
     # требуемая скорость шины: байты за TTI / длительность TTI -> сравнение с ёмкостью
     tti_sec = config.tti_duration_ms / 1000.0
