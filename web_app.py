@@ -133,15 +133,7 @@ if "df" in st.session_state:
     config = st.session_state["config"]
     re_max_prb = st.session_state.get("re_max_prb", 50)  
 
-    # верхние карточки метрики
-        # верхние карточки: только главное (детали - в секциях ниже)
-    _tti_sec = config.tti_duration_ms / 1000.0
-    def _peak_load(item):
-        _stage, _s = item
-        _sp = metrics["block_speeds_gbps"].get(_stage, 5.0)
-        return (_s.get("peak", 0) / _tti_sec / 1e9) / _sp if _sp > 0 else 0.0
-    _btl_stage, _btl_stats = max(metrics["stage_stats"].items(), key=_peak_load)
-    _btl_pct = _peak_load((_btl_stage, _btl_stats)) * 100
+    # верхние карточки
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Cell DL Throughput", f"{metrics['cell_throughput_mbps']:.2f} Мбит/с")
@@ -167,11 +159,6 @@ if "df" in st.session_state:
             a1, a2 = st.columns(2)
             a1.metric("AXI средняя / TTI", f"{metrics['axi_avg_per_tti']/1024:.1f} КБ")
             a2.metric("AXI пиковая / TTI", f"{metrics['axi_max_per_tti']/1024:.1f} КБ")
-            a3, a4, a5 = st.columns(3)
-            a3.metric("AXI пиковая / TTI", f"{metrics['axi_max_per_tti']:.0f} Б")
-            a4.metric("Утилизация шины (средняя)", f"{metrics['bus_util_avg_pct']:.2f} %",
-                      help=f"От ёмкости {metrics['axi_bus_capacity_gbps']} ГБ/с")
-            a5.metric("Утилизация шины (пик)", f"{metrics['bus_util_peak_pct']:.2f} %")
             st.caption("Быстродействие блоков конвейера (среднее за TTI). Цвет строки — загрузка: "
                        "зелёный < 50 %, жёлтый 50–80 %, красный > 80 %.")
             st.dataframe(_style_block_table(_block_table_df(metrics, config)),
